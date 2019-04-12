@@ -7,5 +7,4 @@ description = "experimental authenticated and encrypted unordered datagrams"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-x25519-dalek = "0.5.2"
-rand_os = "0.1.3"
+rust_sodium = "0.10.2"
