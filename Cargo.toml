@@ -8,6 +8,4 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 x25519-dalek = "0.5.2"
-
-[dev-dependencies]
 rand_os = "0.1.3"
