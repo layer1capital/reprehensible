@@ -15,25 +15,32 @@ struct Datagram {
     encrypted_payload: Vec<u8>,
 }
 
-struct DatagramDecrypted {
+/// A verified plaintext message from peer_pk
+pub struct DatagramDecrypted {
     peer_pk: PublicKey,
     payload: Vec<u8>,
 }
 
-struct Reprehensible {
+/// A reprehensible encrypted datagram sender/reciever with a cache of secret shared keys
+pub struct Reprehensible {
     sk: SecretKey,
     shared_secret_cache: BTreeMap<PublicKey, PrecomputedKey>,
 }
 
 impl Reprehensible {
-    fn new() -> Reprehensible {
+    /// Initialize reprehensible. sk is the secret key on which to listen
+    pub fn create(sk: [u8; 32]) -> Reprehensible {
         Reprehensible {
-            sk: gen_keypair().1,
+            sk: as_sk(U256(sk)),
             shared_secret_cache: BTreeMap::new(),
         }
     }
 
-    fn receive(&mut self, datagram: &[u8]) -> Option<DatagramDecrypted> {
+    /// Recive a raw datagram, attempt to decrypt it.
+    /// None will be returned if:
+    /// - Datagram was not long enough to be valid.
+    /// - Ciphertext failed verification.
+    pub fn receive(&mut self, datagram: &[u8]) -> Option<DatagramDecrypted> {
         let dg = parse_datagram(datagram)?;
         let shared_secret = self.dh(&dg.peer_pk);
         let payload = open_precomputed(&dg.encrypted_payload, &dg.nonce, &shared_secret).ok()?;
@@ -43,7 +50,8 @@ impl Reprehensible {
         })
     }
 
-    fn send(&mut self, peer_pk: PublicKey, message: &[u8]) -> Vec<u8> {
+    /// Create a new datagram with self as sender and peer_pk as recipient.
+    pub fn send(&mut self, peer_pk: PublicKey, message: &[u8]) -> Vec<u8> {
         let shared_secret = self.dh(&peer_pk);
         let nonce = gen_nonce();
         let encrypted_payload = seal_precomputed(message, &nonce, &shared_secret);
@@ -127,11 +135,23 @@ fn take_nonce(slice: &[u8]) -> Option<(Nonce, &[u8])> {
 }
 
 fn as_pk(a: U256) -> PublicKey {
+    debug_assert_eq!(std::mem::size_of::<PublicKey>(), 32);
     PublicKey::from_slice(&a.0).unwrap()
 }
 
-fn as_nonce(a: U256) -> Nonce {
-    Nonce::from_slice(&a.0).unwrap()
+fn as_sk(a: U256) -> SecretKey {
+    debug_assert_eq!(std::mem::size_of::<SecretKey>(), 32);
+    SecretKey::from_slice(&a.0).unwrap()
+}
+
+fn as_u256(sk: SecretKey) -> U256 {
+    debug_assert_eq!(std::mem::size_of::<SecretKey>(), 32);
+    U256(sk.0)
+}
+
+/// Generate a random secret key on which to listen
+pub fn random_sk() -> [u8; 32] {
+    (gen_keypair().1).0
 }
 
 #[cfg(test)]
@@ -155,8 +175,8 @@ mod tests {
 
     #[test]
     fn client_server() {
-        let mut server = Reprehensible::new();
-        let mut client = Reprehensible::new();
+        let mut server = Reprehensible::create(random_sk());
+        let mut client = Reprehensible::create(random_sk());
         let server_pub = server.sk.public_key();
         let client_pub = client.sk.public_key();
         let datagram = client.send(server_pub, b"hello");
@@ -199,12 +219,37 @@ mod tests {
     #[test]
     fn impersonate() {
         // send a message to self, using own public key
-        let mut server = Reprehensible::new();
-        let mut client = Reprehensible::new();
+        let mut server = Reprehensible::create(random_sk());
         let server_pub = server.sk.public_key();
         let datagram = server.send(server_pub, b"hello");
         let datagram_decrypted = server.receive(&datagram).unwrap();
         assert_eq!(datagram_decrypted.peer_pk, server_pub);
         assert_eq!(&datagram_decrypted.payload, b"hello");
+    }
+
+    #[test]
+    fn random_pk() {
+        use rust_sodium::crypto::box_;
+
+        let our_sk = [
+            0x04, 0x16, 0xdf, 0x97, 0xc1, 0xee, 0x2c, 0xa8, 0xa1, 0x98, 0xf5, 0x0a, 0x86, 0x2e,
+            0x3b, 0x62, 0xea, 0x95, 0xa3, 0xb2, 0x30, 0x96, 0xcd, 0x44, 0x9f, 0x32, 0x02, 0xc9,
+            0x4c, 0x73, 0xbb, 0xb3,
+        ];
+        let their_sk = [
+            0x1f, 0xf7, 0x10, 0xe8, 0x0a, 0xd6, 0xc2, 0xdf, 0x06, 0x97, 0x61, 0x1e, 0x52, 0xe6,
+            0x43, 0x1c, 0xed, 0xe0, 0x68, 0xd4, 0x94, 0x49, 0xff, 0x93, 0x4c, 0x56, 0xf3, 0x1f,
+            0xd6, 0x61, 0x53, 0xa4,
+        ];
+
+        let oursk = SecretKey(our_sk);
+        let ourpk = oursk.public_key();
+        let theirsk = SecretKey(their_sk);
+        let theirpk = theirsk.public_key();
+        let nonce = box_::gen_nonce();
+        let plaintext = b"some data";
+        let ciphertext = box_::seal(plaintext, &nonce, &theirpk, &oursk);
+        let their_plaintext = box_::open(&ciphertext, &nonce, &ourpk, &theirsk).unwrap();
+        assert!(plaintext == &their_plaintext[..]);
     }
 }
