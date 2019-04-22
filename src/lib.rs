@@ -1,6 +1,6 @@
+pub use rust_sodium::crypto::box_::{gen_nonce, Nonce, PublicKey, SecretKey};
 use rust_sodium::crypto::box_::{
-    gen_nonce, open_detached_precomputed, precompute, seal_detached_precomputed, Nonce,
-    PrecomputedKey, PublicKey, SecretKey, Tag,
+    open_detached_precomputed, precompute, seal_detached_precomputed, PrecomputedKey, Tag,
 };
 use std::collections::BTreeMap;
 use std::mem::size_of;
@@ -11,10 +11,10 @@ struct U256(pub [u8; 32]);
 const DATAGRAM_HEADER_SIZE: usize = size_of::<PublicKey>() + size_of::<Nonce>() + size_of::<Tag>();
 
 pub struct Datagram<'a> {
-    peer_pk: PublicKey,
-    nonce: Nonce,
-    tag: Tag,
-    encrypted_payload: &'a mut [u8],
+    pub peer_pk: PublicKey,
+    pub nonce: Nonce,
+    pub tag: Tag,
+    pub encrypted_payload: &'a mut [u8],
 }
 
 /// A verified plaintext message from peer_pk
@@ -47,9 +47,9 @@ pub struct Reprehensible {
 
 impl Reprehensible {
     /// Initialize reprehensible. sk is the secret key used for both sending and receiving
-    pub fn create(sk: [u8; 32]) -> Reprehensible {
+    pub fn create(sk: SecretKey) -> Reprehensible {
         Reprehensible {
-            sk: as_sk(sk),
+            sk,
             session_cache: BTreeMap::new(),
         }
     }
@@ -68,6 +68,11 @@ impl Reprehensible {
             .seal(self_pk, gen_nonce(), message)
     }
 
+    /// Get the public key associated with this instance
+    pub fn pk(&self) -> PublicKey {
+        self.sk.public_key()
+    }
+
     /// Get secret shared between self and peer.
     /// Secret is expensive to derive, so it is cached for performance.
     /// Early benchmarks indicate deriving a pair takes 3237 times as long as
@@ -83,18 +88,23 @@ impl Reprehensible {
     }
 }
 
-struct SessionKeys {
+pub struct SessionKeys {
     shared_secret: PrecomputedKey,
 }
 
 impl SessionKeys {
-    fn compute(self_sk: &SecretKey, peer_pk: &PublicKey) -> SessionKeys {
+    pub fn compute(self_sk: &SecretKey, peer_pk: &PublicKey) -> SessionKeys {
         SessionKeys {
             shared_secret: precompute(peer_pk, self_sk),
         }
     }
 
-    fn seal<'a>(&self, self_pk: PublicKey, nonce: Nonce, message: &'a mut [u8]) -> Datagram<'a> {
+    pub fn seal<'a>(
+        &self,
+        self_pk: PublicKey,
+        nonce: Nonce,
+        message: &'a mut [u8],
+    ) -> Datagram<'a> {
         let tag = seal_detached_precomputed(message, &nonce, &self.send_sk(&self_pk));
         Datagram {
             peer_pk: self_pk,
@@ -104,7 +114,7 @@ impl SessionKeys {
         }
     }
 
-    fn open<'a>(&self, datagram: Datagram<'a>) -> Option<DatagramDecrypted<'a>> {
+    pub fn open<'a>(&self, datagram: Datagram<'a>) -> Option<DatagramDecrypted<'a>> {
         open_detached_precomputed(
             datagram.encrypted_payload,
             &datagram.tag,
@@ -231,9 +241,9 @@ fn as_sk(a: [u8; 32]) -> SecretKey {
 }
 
 /// Generate a random secret key on which to listen
-pub fn random_sk() -> [u8; 32] {
+pub fn random_sk() -> SecretKey {
     use rand::Rng;
-    rand::thread_rng().gen::<[u8; 32]>()
+    as_sk(rand::thread_rng().gen::<[u8; 32]>())
 }
 
 #[cfg(test)]
@@ -278,31 +288,6 @@ mod tests {
     }
 
     #[test]
-    fn retransmit_attack() {
-        // problem:
-        // since datagrams are unordered, retransmitted datagrams will be accepted
-
-        let mut server = Reprehensible::create(random_sk());
-        let mut client = Reprehensible::create(random_sk());
-        let mut hello = b"hello".to_owned();
-        let datagram = client.send(&server.sk.public_key(), &mut hello);
-
-        assert_eq!(
-            &server
-                .receive(copy_datagram(&datagram, &mut [0u8; 100]))
-                .unwrap()
-                .payload,
-            &b"hello"
-        );
-
-        // Fails because server is vulnerable to retransmission attacks.
-        assert!(&server.receive(datagram).is_none());
-
-        // This attack can and should be mitigated in a higher layer
-        // This test should be moved into
-    }
-
-    #[test]
     fn primitive_mitm_attack() {
         let mut server = Reprehensible::create(random_sk());
         let mut client = Reprehensible::create(random_sk());
@@ -328,7 +313,7 @@ mod tests {
     #[test]
     fn sk_to_pk_deterministic() {
         for _ in 0..100 {
-            let sk = as_sk(random_sk());
+            let sk = random_sk();
             assert_eq!(sk.public_key(), sk.public_key());
         }
     }
@@ -407,7 +392,7 @@ mod tests {
         }
 
         pub fn echo(mut datagram: Vec<u8>) -> Option<Vec<u8>> {
-            let mut server = Reprehensible::create(SERVER_SK.0);
+            let mut server = Reprehensible::create(SERVER_SK);
             let dg = Datagram::parse(&mut datagram)?;
             let peer_pk = dg.peer_pk;
             let message: DatagramDecrypted = server.receive(dg)?;
@@ -470,7 +455,6 @@ mod tests {
     fn n_layer_encrypt() {
         let mut client = Reprehensible::create(random_sk());
         let mut server = Reprehensible::create(random_sk());
-        let client_pk = client.sk.public_key();
         let server_pk = server.sk.public_key();
 
         let n = 10;
@@ -504,23 +488,5 @@ mod tests {
                 client.send(&server_pk, &mut b"hello".to_vec()).serialize()
             );
         }
-    }
-
-    #[test]
-    fn cache_filling_attack() {
-        // Problem:
-        // session_cache only grows. An attack may fill it, causing the server to run out of memory.
-        unimplemented!();
-    }
-
-    #[test]
-    fn high_computation_cost_attack() {
-        // Problem:
-        // Generating session keys is expensive. It is relatively cheap for a remote peer to
-        // make a server generate tons of session keys just by sending garbage udp packets.
-
-        // Potential solution:
-        // In a higher layer, require a puzzle to be solved before derivation.
-        unimplemented!();
     }
 }
