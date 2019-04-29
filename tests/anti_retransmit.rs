@@ -45,3 +45,9 @@ impl AntiRetransmit {
         self.sk.public_key()
     }
 }
+
+// Idea:
+// Using a single message counter would impose an strict ordering of messages.
+// Messages out of order would be dropped. We don't want that, perhaps a list of n counters
+// would work. Each counter effectively becomes a channel. A sender can dispatch n datagrams
+// in rapid succession by picking send channels in round-robin fasion.

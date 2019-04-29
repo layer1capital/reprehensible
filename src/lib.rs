@@ -88,6 +88,7 @@ impl Reprehensible {
     }
 }
 
+#[derive(Clone)]
 pub struct SessionKeys {
     shared_secret: PrecomputedKey,
 }
