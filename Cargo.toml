@@ -9,7 +9,8 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 rust_sodium = "0.10.2"
 rand = "0.6.5"
+sha2 = "0.8.0"
+byteorder = "1.3.1"
 
 [dev-dependencies]
-sha2 = "0.8.0"
 lru = "0.1.15"
