@@ -61,7 +61,7 @@ impl DatagramHead {
         }
     }
 
-    /// mutate puzzle_solution and possibly nonce until score is at least PUZZLE_DIFFICULTY
+    /// mutate puzzle_solution and possibly increment timestamp until score is at least PUZZLE_DIFFICULTY
     fn prove_work(&mut self) {
         for puzzle_solution in 0..std::u64::MAX {
             self.puzzle_solution = puzzle_solution;
@@ -70,7 +70,7 @@ impl DatagramHead {
             }
         }
         // search space exausted, try again
-        self.nonce = gen_nonce();
+        self.rx_time_nanos += 1;
         self.prove_work();
     }
 }
