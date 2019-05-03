@@ -58,7 +58,7 @@ impl Datagram {
         })
     }
 
-    pub fn serialize(self, proof_of_work: ProofOfWork) -> Vec<u8> {
+    pub fn serialize(self, proof_of_work_difficulty: u32) -> Vec<u8> {
         let Datagram {
             head:
                 DatagramHead {
@@ -75,6 +75,7 @@ impl Datagram {
         ret.extend_from_slice(&source_pk.to_ne());
         ret.extend_from_slice(&nonce.to_ne());
         ret.extend_from_slice(&mac.to_ne());
+        let proof_of_work = ProofOfWork::prove_work(proof_of_work_difficulty, &ret);
         ret.extend_from_slice(&proof_of_work.to_ne());
         ret.append(&mut cyphertext);
         debug_assert_eq!(ret.len(), retlen);
@@ -105,19 +106,23 @@ impl Cryptor {
         SessionKey::compute(&self.sk, &destination_pk).seal(destination_pk, self.pk, plaintext)
     }
 
+    /// If destination_pk does not match own pk, None is returned.
     pub fn decrypt(&self, datagram: Datagram) -> Option<DatagramPlaintext> {
         let Datagram {
             head:
                 DatagramHead {
+                    destination_pk,
                     source_pk,
                     nonce,
                     mac,
-                    ..
                 },
             cyphertext,
-            ..
         } = datagram;
-        SessionKey::compute(&self.sk, &source_pk).open(source_pk, nonce, mac, cyphertext)
+        if destination_pk != self.pk {
+            None
+        } else {
+            SessionKey::compute(&self.sk, &source_pk).open(source_pk, nonce, mac, cyphertext)
+        }
     }
 }
 
@@ -316,7 +321,7 @@ mod tests {
             let mut reply = message.plaintext.clone();
             reply.append(&mut message.plaintext);
             let reply_dg = server.encrypt(source_pk, reply);
-            Some(reply_dg.serialize(ProofOfWork::no_work()))
+            Some(reply_dg.serialize(0))
         }
 
         #[test]
@@ -326,7 +331,7 @@ mod tests {
             let client = Cryptor::new(gen_keypair().1);
             let dg = client
                 .encrypt(server_pk, b"redundancy".to_vec())
-                .serialize(ProofOfWork::no_work());
+                .serialize(0);
             let mut response_dg_raw = echo_server(dg).unwrap();
             let response_dg = Datagram::parse(&mut response_dg_raw).unwrap();
             assert_eq!(response_dg.head.destination_pk, client.pk);
@@ -334,6 +339,46 @@ mod tests {
             let response_plain = client.decrypt(response_dg).unwrap();
             assert_eq!(response_plain.source_pk, server_pk);
             assert_eq!(response_plain.plaintext, b"redundancyredundancy");
+        }
+
+        #[test]
+        fn echo_client_tamper() {
+            let server_pk = SERVER_SK.public_key();
+            let client = Cryptor::new(gen_keypair().1);
+            let dg = client
+                .encrypt(server_pk, b"redundancy".to_vec())
+                .serialize(0);
+            {
+                // tamper destination pk
+                let mut dg = dg.clone();
+                dg[0] = dg[0].wrapping_add(1);
+                assert!(echo_server(dg).is_none());
+            }
+            {
+                // tamper source pk
+                let mut dg = dg.clone();
+                let sender_loc = size_of::<PublicKey>();
+                dg[sender_loc] = dg[sender_loc].wrapping_add(1);
+                assert!(echo_server(dg).is_none());
+            }
+            {
+                // tamper body
+                let mut dg = dg.clone();
+                let end = dg.len() - 1;
+                dg[end] = dg[end].wrapping_add(1);
+                assert!(echo_server(dg).is_none());
+            }
+            {
+                // tamper timestamp has no effect because echo server is not checking POW
+                let mut dg = dg.clone();
+                let timstamp_loc = size_of::<DatagramHead>();
+                dg[timstamp_loc] = dg[timstamp_loc].wrapping_add(1);
+                assert!(echo_server(dg).is_some());
+            }
+            {
+                // no tamper
+                assert!(echo_server(dg.clone()).is_some());
+            }
         }
     }
 
@@ -344,9 +389,7 @@ mod tests {
         let server = Cryptor::new(gen_keypair().1);
         let client_pk = client.pk;
 
-        let message = client
-            .encrypt(server.pk, b"hello".to_vec())
-            .serialize(ProofOfWork::no_work());
+        let message = client.encrypt(server.pk, b"hello".to_vec()).serialize(0);
         let message = client.encrypt(server.pk, message);
         let rx = server.decrypt(message).unwrap();
         assert_eq!(rx.source_pk, client_pk);
@@ -364,9 +407,7 @@ mod tests {
     }
 
     fn encrypt(sender: &Cryptor, receiver: PublicKey, message: Vec<u8>) -> Vec<u8> {
-        sender
-            .encrypt(receiver, message)
-            .serialize(ProofOfWork::no_work())
+        sender.encrypt(receiver, message).serialize(0)
     }
 
     #[test]
@@ -426,8 +467,61 @@ mod tests {
         }
     }
 
+    mod proof_of_work {
+        // Problem:
+        // Generating session keys is expensive. It is relatively cheap for a remote peer to
+        // make a server generate tons of session keys just by sending garbage udp packets.
+
+        // Solution, demonstrated here:
+        // Require a puzzle to be solved before deriving a shared key.
+
+        use super::*;
+
+        const SERVER_SK: SecretKey = SecretKey([
+            0x33, 0x4f, 0x0e, 0xbf, 0x3a, 0x15, 0x9b, 0x7e, 0x70, 0x07, 0x30, 0x0b, 0x88, 0x6c,
+            0x94, 0x78, 0x6a, 0x4c, 0xf8, 0x33, 0xd8, 0x95, 0xa1, 0x17, 0x45, 0x8b, 0xaa, 0x69,
+            0x49, 0x33, 0x42, 0x6d,
+        ]);
+
+        const DIFFICULTY: u32 = 12;
+
+        /// Only returns None if proof of work is not satisfied. In this context other failures
+        /// indicate a bug.
+        pub fn echo_server(mut datagram: Vec<u8>) -> Option<Vec<u8>> {
+            if Datagram::score(&datagram) < DIFFICULTY {
+                return None;
+            }
+            let server = Cryptor::new(SERVER_SK);
+            let dg = Datagram::parse(&mut datagram).unwrap();
+            let source_pk = dg.head.source_pk;
+            let message = server.decrypt(dg).unwrap();
+            let reply_dg = server.encrypt(source_pk, message.plaintext);
+            Some(reply_dg.serialize(0))
+        }
+
+        #[test]
+        fn echo_client() {
+            let server_pk = SERVER_SK.public_key();
+            let client = Cryptor::new(gen_keypair().1);
+            let dg = client.encrypt(server_pk, b"hello".to_vec());
+
+            let work = dg.clone().serialize(DIFFICULTY);
+            let lazy = dg.clone().serialize(0);
+            let tamper_head = {
+                let mut a = dg.clone().serialize(DIFFICULTY);
+                a[0] = a[0].wrapping_add(1);
+                a
+            };
+
+            assert!(echo_server(work).is_some());
+            assert!(echo_server(lazy).is_none());
+            assert!(echo_server(tamper_head).is_none());
+        }
+    }
+
     #[test]
-    fn proof_of_work() {
-        unimplemented!()
+    /// tweak random bytes in transit and ensure Cryptor rejects messages
+    fn random_tampering() {
+        unimplemented!();
     }
 }

@@ -49,14 +49,6 @@ impl ProofOfWork {
             "I've been at this for around 10^14 years. Humanity is probably long gone, time to rest."
         )
     }
-
-    /// Create an empty proof of work tagged for now.
-    pub fn no_work() -> ProofOfWork {
-        ProofOfWork {
-            rx_time_nanos: now_nanos(),
-            proof_of_work: 0,
-        }
-    }
 }
 
 impl Ne for ProofOfWork {
