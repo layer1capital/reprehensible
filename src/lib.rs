@@ -39,7 +39,7 @@ impl Datagram {
     }
 
     /// Attempt to interpret raw bytes as an encrypted datagram.
-    /// None is returned if slice is not long enough to be a valid datagram.
+    /// None is returned only if slice is not long enough to be a valid datagram.
     pub fn parse(raw: &[u8]) -> Option<Datagram> {
         let (destination_pk, rest) = PublicKey::pick(raw)?;
         let (source_pk, rest) = PublicKey::pick(rest)?;
@@ -191,6 +191,8 @@ fn xor_bytes(mut a: [u8; 32], b: &[u8; 32]) -> [u8; 32] {
 mod tests {
     use super::*;
     use rust_sodium::crypto::box_::gen_keypair;
+
+    const DIFFICULTY: u32 = 1;
 
     #[test]
     fn echo_attack() {
@@ -376,8 +378,61 @@ mod tests {
                 assert!(echo_server(dg).is_some());
             }
             {
+                // tamper decrease length
+                let mut dg = dg.clone();
+                while let Some(_) = dg.pop() {
+                    assert!(echo_server(dg.clone()).is_none());
+                }
+            }
+            {
+                // tamper increase length
+                let mut dg = dg.clone();
+                dg.push(0);
+                assert!(echo_server(dg).is_none());
+            }
+            {
                 // no tamper
                 assert!(echo_server(dg.clone()).is_some());
+            }
+        }
+
+        #[test]
+        /// tweak random bytes in transit and ensure Cryptor rejects messages
+        fn random_tampering() {
+            let client = Cryptor::new(gen_keypair().1);
+            let datagram_raw = client
+                .encrypt(SERVER_SK.public_key(), b"hello".to_vec())
+                .serialize(DIFFICULTY);
+
+            assert!(echo_server(datagram_raw.clone()).is_some());
+
+            for _ in 0..(datagram_raw.len()) {
+                let mut dgr = datagram_raw.clone();
+                let index: usize = rand::random::<usize>() % dgr.len();
+                dgr[index] = dgr[index].wrapping_add(random_nonzero());
+                let response = {
+                    // It is possible to modify the proof of work fields (timestamp, and pow).
+                    // Changing the field to something with a low score has a similar effect to
+                    // simply dropping the packet.
+                    echo_server(dgr)
+                };
+                let powstart = size_of::<DatagramHead>();
+                let powend = powstart + size_of::<ProofOfWork>();
+                if index >= powstart && index < powend {
+                    // we modified the proof of work, datagrams may still be accepted when pow is modified
+                    assert!(response.is_some());
+                } else {
+                    assert!(response.is_none());
+                }
+            }
+
+            fn random_nonzero() -> u8 {
+                loop {
+                    let ret = rand::random();
+                    if ret != 0 {
+                        return ret;
+                    }
+                }
             }
         }
     }
@@ -483,11 +538,9 @@ mod tests {
             0x49, 0x33, 0x42, 0x6d,
         ]);
 
-        const DIFFICULTY: u32 = 12;
-
         /// Only returns None if proof of work is not satisfied. In this context other failures
         /// indicate a bug.
-        pub fn echo_server(mut datagram: Vec<u8>) -> Option<Vec<u8>> {
+        pub fn echo_server_pow(mut datagram: Vec<u8>) -> Option<Vec<u8>> {
             if Datagram::score(&datagram) < DIFFICULTY {
                 return None;
             }
@@ -500,28 +553,72 @@ mod tests {
         }
 
         #[test]
-        fn echo_client() {
+        fn echo_client_pow() {
             let server_pk = SERVER_SK.public_key();
             let client = Cryptor::new(gen_keypair().1);
             let dg = client.encrypt(server_pk, b"hello".to_vec());
 
             let work = dg.clone().serialize(DIFFICULTY);
-            let lazy = dg.clone().serialize(0);
-            let tamper_head = {
-                let mut a = dg.clone().serialize(DIFFICULTY);
-                a[0] = a[0].wrapping_add(1);
-                a
+            let lazy = loop {
+                // keep deserializing until we get a score less than DIFFICULTY
+                assert!(DIFFICULTY >= 1);
+                let dg_raw = dg.clone().serialize(0);
+                if Datagram::score(&dg_raw) < DIFFICULTY {
+                    break dg_raw;
+                }
             };
 
-            assert!(echo_server(work).is_some());
-            assert!(echo_server(lazy).is_none());
-            assert!(echo_server(tamper_head).is_none());
+            assert!(echo_server_pow(work).is_some());
+            assert!(echo_server_pow(lazy).is_none());
         }
     }
 
     #[test]
-    /// tweak random bytes in transit and ensure Cryptor rejects messages
-    fn random_tampering() {
-        unimplemented!();
+    fn peer_spoof_sender() {
+        let client = Cryptor::new(gen_keypair().1);
+        let server = Cryptor::new(gen_keypair().1);
+
+        {
+            // client spoofs a datagram from server to client
+            let spoof = SessionKey::compute(&client.sk, &server.pk).seal(
+                client.pk, // <---\___ Sender and reciever are swapped.
+                server.pk, // <---/
+                b"spoof".to_vec(),
+            );
+
+            // client sends spoofed datagram to server
+            let response = server.decrypt(spoof);
+
+            // server should reject datagram
+            assert!(response.is_none());
+        }
+
+        {
+            // same test, but without spoofing
+            let not_spoof = SessionKey::compute(&client.sk, &server.pk).seal(
+                server.pk,
+                client.pk,
+                b"spoof".to_vec(),
+            );
+            let response = server.decrypt(not_spoof);
+            assert!(response.is_some());
+        }
+    }
+
+    #[test]
+    fn send_empty() {
+        let client = Cryptor::new(gen_keypair().1);
+        let server = Cryptor::new(gen_keypair().1);
+        let dg = client.encrypt(server.pk, b"".to_vec());
+        assert_eq!(&server.decrypt(dg).unwrap().plaintext, b"");
+    }
+
+    #[test]
+    fn send_large() {
+        let client = Cryptor::new(gen_keypair().1);
+        let server = Cryptor::new(gen_keypair().1);
+        let plaintext: Vec<u8> = (0..1_000_000).map(|i| i as u8).collect();
+        let dg = client.encrypt(server.pk, plaintext.clone());
+        assert_eq!(server.decrypt(dg).unwrap().plaintext, plaintext);
     }
 }
