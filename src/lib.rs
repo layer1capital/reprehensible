@@ -1,7 +1,7 @@
 mod network_byte_order;
 mod pow;
 use crate::network_byte_order::Ne;
-use pow::ProofOfWork;
+pub use pow::prove_work;
 use rust_sodium::crypto::box_::{
     gen_nonce, open_detached_precomputed, precompute, seal_detached_precomputed, Nonce,
     PrecomputedKey, PublicKey, SecretKey, Tag,
@@ -14,6 +14,11 @@ struct DatagramHead {
     destination_pk: PublicKey,
     /// Public key of sender.
     source_pk: PublicKey,
+    /// Time when proof of work was computed
+    pow_time_nanos: u128,
+    /// applied to destination_pk, source_pk, and pow_time_nanos; not the rest of the datagram
+    /// can be reused in future packets
+    proof_of_work: u128,
     nonce: Nonce,
     /// Message authentication code.
     mac: Tag,
@@ -26,31 +31,22 @@ pub struct Datagram {
 }
 
 impl Datagram {
-    /// Get the POW score of datagram before parsing. Any datagram of insufficient length has
-    /// score 0.
-    pub fn score(raw: &[u8]) -> u32 {
-        const SCORE_SCOPE: usize = size_of::<DatagramHead>() + size_of::<ProofOfWork>();
-        if raw.len() <= SCORE_SCOPE {
-            0
-        } else {
-            let head = raw.split_at(SCORE_SCOPE).0;
-            pow::score(head)
-        }
-    }
-
     /// Attempt to interpret raw bytes as an encrypted datagram.
     /// None is returned only if slice is not long enough to be a valid datagram.
     pub fn parse(raw: &[u8]) -> Option<Datagram> {
         let (destination_pk, rest) = PublicKey::pick(raw)?;
         let (source_pk, rest) = PublicKey::pick(rest)?;
+        let (pow_time_nanos, rest) = u128::pick(rest)?;
+        let (proof_of_work, rest) = u128::pick(rest)?;
         let (nonce, rest) = Nonce::pick(rest)?;
         let (mac, rest) = Tag::pick(rest)?;
-        let (_proof_of_work, rest) = ProofOfWork::pick(rest)?; // pow is thrown away
         let cyphertext = rest.to_vec();
         Some(Datagram {
             head: DatagramHead {
                 destination_pk,
                 source_pk,
+                pow_time_nanos,
+                proof_of_work,
                 nonce,
                 mac,
             },
@@ -58,28 +54,46 @@ impl Datagram {
         })
     }
 
-    pub fn serialize(self, proof_of_work_difficulty: u32) -> Vec<u8> {
+    pub fn serialize(self) -> Vec<u8> {
         let Datagram {
             head:
                 DatagramHead {
                     destination_pk,
                     source_pk,
+                    pow_time_nanos,
+                    proof_of_work,
                     nonce,
                     mac,
                 },
             mut cyphertext,
         } = self;
-        let retlen = size_of::<DatagramHead>() + size_of::<ProofOfWork>() + cyphertext.len();
+        let retlen = size_of::<DatagramHead>() + cyphertext.len();
         let mut ret = Vec::with_capacity(retlen);
         ret.extend_from_slice(&destination_pk.to_ne());
         ret.extend_from_slice(&source_pk.to_ne());
+        ret.extend_from_slice(&pow_time_nanos.to_ne());
+        ret.extend_from_slice(&proof_of_work.to_ne());
         ret.extend_from_slice(&nonce.to_ne());
         ret.extend_from_slice(&mac.to_ne());
-        let proof_of_work = ProofOfWork::prove_work(proof_of_work_difficulty, &ret);
-        ret.extend_from_slice(&proof_of_work.to_ne());
         ret.append(&mut cyphertext);
         debug_assert_eq!(ret.len(), retlen);
         ret
+    }
+
+    /// set the proof of work fields for this datagram
+    pub fn with_pow(mut self, pow_time_nanos: u128, proof_of_work: u128) -> Self {
+        self.head.pow_time_nanos = pow_time_nanos;
+        self.head.proof_of_work = proof_of_work;
+        self
+    }
+
+    pub fn pow_score(&self) -> u32 {
+        pow::score(
+            &self.head.destination_pk,
+            &self.head.source_pk,
+            self.head.pow_time_nanos,
+            self.head.proof_of_work,
+        )
     }
 }
 
@@ -113,6 +127,8 @@ impl Cryptor {
                 DatagramHead {
                     destination_pk,
                     source_pk,
+                    pow_time_nanos: _,
+                    proof_of_work: _,
                     nonce,
                     mac,
                 },
@@ -149,6 +165,8 @@ impl SessionKey {
         let head = DatagramHead {
             destination_pk,
             source_pk,
+            pow_time_nanos: 0,
+            proof_of_work: 0,
             nonce,
             mac,
         };
@@ -323,7 +341,7 @@ mod tests {
             let mut reply = message.plaintext.clone();
             reply.append(&mut message.plaintext);
             let reply_dg = server.encrypt(source_pk, reply);
-            Some(reply_dg.serialize(0))
+            Some(reply_dg.serialize())
         }
 
         #[test]
@@ -333,7 +351,7 @@ mod tests {
             let client = Cryptor::new(gen_keypair().1);
             let dg = client
                 .encrypt(server_pk, b"redundancy".to_vec())
-                .serialize(0);
+                .serialize();
             let mut response_dg_raw = echo_server(dg).unwrap();
             let response_dg = Datagram::parse(&mut response_dg_raw).unwrap();
             assert_eq!(response_dg.head.destination_pk, client.pk);
@@ -349,7 +367,7 @@ mod tests {
             let client = Cryptor::new(gen_keypair().1);
             let dg = client
                 .encrypt(server_pk, b"redundancy".to_vec())
-                .serialize(0);
+                .serialize();
             {
                 // tamper destination pk
                 let mut dg = dg.clone();
@@ -373,7 +391,7 @@ mod tests {
             {
                 // tamper timestamp has no effect because echo server is not checking POW
                 let mut dg = dg.clone();
-                let timstamp_loc = size_of::<DatagramHead>();
+                let timstamp_loc = size_of::<PublicKey>() + size_of::<PublicKey>();
                 dg[timstamp_loc] = dg[timstamp_loc].wrapping_add(1);
                 assert!(echo_server(dg).is_some());
             }
@@ -396,13 +414,55 @@ mod tests {
             }
         }
 
+        fn typed_tamper<F: FnOnce(&mut Datagram)>(tamper: F) -> Option<DatagramPlaintext> {
+            let client = Cryptor::new(gen_keypair().1);
+            let server = Cryptor::new(gen_keypair().1);
+            let mut dg =
+                Datagram::parse(&client.encrypt(server.pk, b"hello".to_vec()).serialize()).unwrap();
+            tamper(&mut dg);
+            server.decrypt(Datagram::parse(&dg.serialize()).unwrap())
+        }
+
+        #[test]
+        fn echo_client_typed_tamper() {
+            assert!(typed_tamper(|dg| {
+                dg.head.destination_pk.0[0] = dg.head.destination_pk.0[0].wrapping_add(1);
+            })
+            .is_none());
+            assert!(typed_tamper(|dg| {
+                dg.head.source_pk.0[0] = dg.head.source_pk.0[0].wrapping_add(1);
+            })
+            .is_none());
+            assert!(typed_tamper(|dg| {
+                dg.cyphertext[0] = dg.cyphertext[0].wrapping_add(1);
+            })
+            .is_none());
+            assert!(typed_tamper(|dg| {
+                dg.head.pow_time_nanos = dg.head.pow_time_nanos.wrapping_add(1);
+            })
+            .is_some());
+            assert!(typed_tamper(|dg| {
+                dg.head.proof_of_work = dg.head.proof_of_work.wrapping_add(1);
+            })
+            .is_some());
+            assert!(typed_tamper(|dg| {
+                dg.cyphertext.pop();
+            })
+            .is_none());
+            assert!(typed_tamper(|dg| {
+                dg.cyphertext.push(0);
+            })
+            .is_none());
+            assert!(typed_tamper(|_dg| {}).is_some());
+        }
+
         #[test]
         /// tweak random bytes in transit and ensure Cryptor rejects messages
         fn random_tampering() {
             let client = Cryptor::new(gen_keypair().1);
             let datagram_raw = client
                 .encrypt(SERVER_SK.public_key(), b"hello".to_vec())
-                .serialize(DIFFICULTY);
+                .serialize();
 
             assert!(echo_server(datagram_raw.clone()).is_some());
 
@@ -416,8 +476,8 @@ mod tests {
                     // simply dropping the packet.
                     echo_server(dgr)
                 };
-                let powstart = size_of::<DatagramHead>();
-                let powend = powstart + size_of::<ProofOfWork>();
+                let powstart = size_of::<PublicKey>() + size_of::<PublicKey>();
+                let powend = powstart + size_of::<u128>() + size_of::<u128>();
                 if index >= powstart && index < powend {
                     // we modified the proof of work, datagrams may still be accepted when pow is modified
                     assert!(response.is_some());
@@ -444,7 +504,7 @@ mod tests {
         let server = Cryptor::new(gen_keypair().1);
         let client_pk = client.pk;
 
-        let message = client.encrypt(server.pk, b"hello".to_vec()).serialize(0);
+        let message = client.encrypt(server.pk, b"hello".to_vec()).serialize();
         let message = client.encrypt(server.pk, message);
         let rx = server.decrypt(message).unwrap();
         assert_eq!(rx.source_pk, client_pk);
@@ -462,7 +522,7 @@ mod tests {
     }
 
     fn encrypt(sender: &Cryptor, receiver: PublicKey, message: Vec<u8>) -> Vec<u8> {
-        sender.encrypt(receiver, message).serialize(0)
+        sender.encrypt(receiver, message).serialize()
     }
 
     #[test]
@@ -541,15 +601,15 @@ mod tests {
         /// Only returns None if proof of work is not satisfied. In this context other failures
         /// indicate a bug.
         pub fn echo_server_pow(mut datagram: Vec<u8>) -> Option<Vec<u8>> {
-            if Datagram::score(&datagram) < DIFFICULTY {
-                return None;
-            }
             let server = Cryptor::new(SERVER_SK);
             let dg = Datagram::parse(&mut datagram).unwrap();
+            if dg.pow_score() < DIFFICULTY {
+                return None;
+            }
             let source_pk = dg.head.source_pk;
             let message = server.decrypt(dg).unwrap();
             let reply_dg = server.encrypt(source_pk, message.plaintext);
-            Some(reply_dg.serialize(0))
+            Some(reply_dg.serialize())
         }
 
         #[test]
@@ -558,15 +618,21 @@ mod tests {
             let client = Cryptor::new(gen_keypair().1);
             let dg = client.encrypt(server_pk, b"hello".to_vec());
 
-            let work = dg.clone().serialize(DIFFICULTY);
-            let lazy = loop {
-                // keep deserializing until we get a score less than DIFFICULTY
-                assert!(DIFFICULTY >= 1);
-                let dg_raw = dg.clone().serialize(0);
-                if Datagram::score(&dg_raw) < DIFFICULTY {
-                    break dg_raw;
+            let work = dg
+                .clone()
+                .with_pow(0, prove_work(&client.pk, &server_pk, 0, DIFFICULTY))
+                .serialize();
+
+            let lazy = {
+                assert_ne!(DIFFICULTY, 0);
+                // make sure score is less than DIFFICULTY
+                let mut dg = dg.clone();
+                while dg.pow_score() >= DIFFICULTY {
+                    dg.head.proof_of_work += 1;
                 }
-            };
+                dg
+            }
+            .serialize();
 
             assert!(echo_server_pow(work).is_some());
             assert!(echo_server_pow(lazy).is_none());
@@ -620,5 +686,38 @@ mod tests {
         let plaintext: Vec<u8> = (0..1_000_000).map(|i| i as u8).collect();
         let dg = client.encrypt(server.pk, plaintext.clone());
         assert_eq!(server.decrypt(dg).unwrap().plaintext, plaintext);
+    }
+
+    #[test]
+    fn pow() {
+        let client = Cryptor::new(gen_keypair().1);
+        let server = Cryptor::new(gen_keypair().1);
+        let proof_of_work = prove_work(&client.pk, &server.pk, 0, DIFFICULTY);
+        let dg = client
+            .encrypt(server.pk, b"".to_vec())
+            .with_pow(0, proof_of_work);
+        let score = dg.pow_score();
+        assert!(score >= DIFFICULTY);
+    }
+
+    #[test]
+    fn pow_reuse() {
+        let client = Cryptor::new(gen_keypair().1);
+        let server = Cryptor::new(gen_keypair().1);
+        let proof_of_work = prove_work(&client.pk, &server.pk, 0, DIFFICULTY);
+
+        let c_to_s = client
+            .encrypt(server.pk, b"hello, server".to_vec())
+            .with_pow(0, proof_of_work);
+
+        let s_to_c = server
+            .encrypt(client.pk, b"hello, client".to_vec())
+            .with_pow(0, proof_of_work);
+
+        assert!(c_to_s.pow_score() > DIFFICULTY);
+        assert!(s_to_c.pow_score() > DIFFICULTY);
+
+        assert_eq!(&server.decrypt(c_to_s).unwrap().plaintext, b"hello, server");
+        assert_eq!(&client.decrypt(s_to_c).unwrap().plaintext, b"hello, client");
     }
 }
