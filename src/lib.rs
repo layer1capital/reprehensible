@@ -80,7 +80,8 @@ impl Datagram {
         ret
     }
 
-    /// set the proof of work fields for this datagram
+    /// set the proof of work fields for this datagram.
+    /// proof_of_work should mark (source_pk, destination_pk) and (destination_pk, source_pk).
     pub fn with_pow(mut self, pow_time_nanos: u128, proof_of_work: u128) -> Self {
         self.head.pow_time_nanos = pow_time_nanos;
         self.head.proof_of_work = proof_of_work;
@@ -94,6 +95,21 @@ impl Datagram {
             self.head.pow_time_nanos,
             self.head.proof_of_work,
         )
+    }
+
+    /// Calculate the proof of work score from the first few bytes of the datagram before the
+    /// datagram is parsed. Return None if datagram is not long enough to have a score.
+    pub fn pow_score_raw(raw: &[u8]) -> Option<u32> {
+        let (destination_pk, rest) = PublicKey::pick(raw)?;
+        let (source_pk, rest) = PublicKey::pick(rest)?;
+        let (pow_time_nanos, rest) = u128::pick(rest)?;
+        let (proof_of_work, _rest) = u128::pick(rest)?;
+        Some(pow::score(
+            &destination_pk,
+            &source_pk,
+            pow_time_nanos,
+            proof_of_work,
+        ))
     }
 }
 
@@ -607,8 +623,12 @@ mod tests {
                 return None;
             }
             let source_pk = dg.head.source_pk;
+            let pow_time_nanos = dg.head.pow_time_nanos;
+            let proof_of_work = dg.head.proof_of_work;
             let message = server.decrypt(dg).unwrap();
-            let reply_dg = server.encrypt(source_pk, message.plaintext);
+            let reply_dg = server
+                .encrypt(source_pk, message.plaintext)
+                .with_pow(pow_time_nanos, proof_of_work); // proof of work is resused for responce
             Some(reply_dg.serialize())
         }
 
@@ -636,6 +656,21 @@ mod tests {
 
             assert!(echo_server_pow(work).is_some());
             assert!(echo_server_pow(lazy).is_none());
+        }
+
+        #[test]
+        fn echo_client_pow_reuse() {
+            let server_pk = SERVER_SK.public_key();
+            let client = Cryptor::new(gen_keypair().1);
+            let work_proof = prove_work(&client.pk, &server_pk, 0, DIFFICULTY);
+            let dg = client
+                .encrypt(server_pk, b"hello".to_vec())
+                .with_pow(0, work_proof)
+                .serialize();
+            let response = Datagram::parse(&echo_server_pow(dg).unwrap()).unwrap();
+            assert!(response.pow_score() >= DIFFICULTY);
+            assert_eq!(response.head.proof_of_work, work_proof);
+            assert_eq!(&client.decrypt(response).unwrap().plaintext, b"hello");
         }
     }
 
@@ -704,20 +739,43 @@ mod tests {
     fn pow_reuse() {
         let client = Cryptor::new(gen_keypair().1);
         let server = Cryptor::new(gen_keypair().1);
-        let proof_of_work = prove_work(&client.pk, &server.pk, 0, DIFFICULTY);
 
-        let c_to_s = client
-            .encrypt(server.pk, b"hello, server".to_vec())
-            .with_pow(0, proof_of_work);
+        for t in 0..16 {
+            let proof_of_work = prove_work(&client.pk, &server.pk, t, DIFFICULTY);
 
-        let s_to_c = server
-            .encrypt(client.pk, b"hello, client".to_vec())
-            .with_pow(0, proof_of_work);
+            let c_to_s = client
+                .encrypt(server.pk, b"hello, server".to_vec())
+                .with_pow(t, proof_of_work);
 
-        assert!(c_to_s.pow_score() > DIFFICULTY);
-        assert!(s_to_c.pow_score() > DIFFICULTY);
+            let s_to_c = server
+                .encrypt(client.pk, b"hello, client".to_vec())
+                .with_pow(t, proof_of_work);
 
-        assert_eq!(&server.decrypt(c_to_s).unwrap().plaintext, b"hello, server");
-        assert_eq!(&client.decrypt(s_to_c).unwrap().plaintext, b"hello, client");
+            assert!(c_to_s.pow_score() >= DIFFICULTY);
+            assert!(s_to_c.pow_score() >= DIFFICULTY);
+
+            assert_eq!(&server.decrypt(c_to_s).unwrap().plaintext, b"hello, server");
+            assert_eq!(&client.decrypt(s_to_c).unwrap().plaintext, b"hello, client");
+        }
+    }
+
+    #[test]
+    /// Datagram::pow_score yeilds the same result as Datagram::pow_score_raw.
+    fn pow_raw_parsed() {
+        let client = Cryptor::new(gen_keypair().1);
+        let server = Cryptor::new(gen_keypair().1);
+
+        for t in 0..16 {
+            let proof_of_work = prove_work(&client.pk, &server.pk, t, DIFFICULTY);
+
+            let dg = client
+                .encrypt(server.pk, b"hello, server".to_vec())
+                .with_pow(t, proof_of_work);
+
+            assert_eq!(
+                Datagram::pow_score(&dg),
+                Datagram::pow_score_raw(&dg.serialize()).unwrap()
+            );
+        }
     }
 }

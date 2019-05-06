@@ -41,15 +41,12 @@ pub fn score(pk_a: &PublicKey, pk_b: &PublicKey, pow_time_nanos: u128, proof_of_
 fn prefix_sha(pk_a: &PublicKey, pk_b: &PublicKey, pow_time_nanos: u128) -> Sha256 {
     let a_ne = pk_a.to_ne();
     let b_ne = pk_b.to_ne();
-    let (pk0, pk1) = if a_ne > b_ne {
-        (a_ne, b_ne)
+    if a_ne > b_ne {
+        Sha256::new().chain(a_ne).chain(b_ne)
     } else {
-        (b_ne, a_ne)
-    };
-    Sha256::new()
-        .chain(pk0)
-        .chain(pk1)
-        .chain(pow_time_nanos.to_ne())
+        Sha256::new().chain(b_ne).chain(a_ne)
+    }
+    .chain(pow_time_nanos.to_ne())
 }
 
 fn leading_zeros(inp: &[u8; 32]) -> u32 {
@@ -77,16 +74,26 @@ mod tests {
         let source_pk = gen_keypair().0;
         let destination_pk = gen_keypair().0;
 
-        /// Proof of work is a pure function
-        assert_eq!(
-            prove_work(&source_pk, &destination_pk, 0, DIFFICULTY),
-            prove_work(&source_pk, &destination_pk, 0, DIFFICULTY)
-        );
+        for t in 0..16 {
+            /// Proof of work is associative
+            assert_eq!(
+                prove_work(&source_pk, &destination_pk, t, DIFFICULTY),
+                prove_work(&destination_pk, &source_pk, t, DIFFICULTY)
+            );
+        }
+    }
 
-        /// Proof of work is associative
-        assert_eq!(
-            prove_work(&source_pk, &destination_pk, 0, DIFFICULTY),
-            prove_work(&destination_pk, &source_pk, 0, DIFFICULTY)
-        );
+    #[test]
+    fn pow_pure() {
+        let source_pk = gen_keypair().0;
+        let destination_pk = gen_keypair().0;
+
+        for t in 0..16 {
+            /// Proof of work is a pure function
+            assert_eq!(
+                prove_work(&source_pk, &destination_pk, t, DIFFICULTY),
+                prove_work(&source_pk, &destination_pk, t, DIFFICULTY)
+            );
+        }
     }
 }
