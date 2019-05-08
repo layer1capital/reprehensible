@@ -5,10 +5,6 @@ Reprehensible does not implement multiplexing.
 Reprehensible does not assume udp as the underlying transport.
 Reprehensible does not specify any handshake. Connections are semantically stateless like udp.
 
-## Comparison to DTLS
-
-TODO
-
 ## Why the name?
 
 The name "reprehensible" was randomly selected.
@@ -20,6 +16,10 @@ Reprehensible does not provide forward secrecy.
 Reprehensible does not protect against replay attacks.
 
 Reprehensible does not deal with ip fragmentation.
+
+Reprehensible does not protect against amplification attacks.
+
+Reprehensible does not detect spoofed IPs. (IP is not in project scope)
 
 ## Philosophy
 

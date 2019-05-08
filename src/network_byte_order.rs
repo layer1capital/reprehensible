@@ -1,5 +1,7 @@
 // "Ne" is short for Network Endian
 
+use crate::pow_header::PowHeader;
+use crate::DatagramHead;
 use byteorder::{ByteOrder, NetworkEndian};
 use rust_sodium::crypto::box_::{Nonce, PublicKey, SecretKey, Tag};
 use std::convert::AsRef;
@@ -35,6 +37,19 @@ pub trait Ne: std::marker::Sized {
         } else {
             let (head, tail) = src.split_at(size_of::<Self>());
             Some((Self::from_ne_unchecked(head), tail))
+        }
+    }
+
+    /// write self into dest and return rest, if self is too large to fit in dest, return None
+    fn put(self, dest: &mut [u8]) -> Option<&mut [u8]> {
+        let ne = self.to_ne();
+        let ne = ne.as_ref();
+        if ne.len() > dest.len() {
+            None
+        } else {
+            let (head, tail) = dest.split_at_mut(ne.len());
+            head.copy_from_slice(&ne);
+            Some(tail)
         }
     }
 }
@@ -110,6 +125,70 @@ impl Ne for u128 {
 
     fn from_ne_unchecked(src: &[u8]) -> Self {
         NetworkEndian::read_u128(&src)
+    }
+}
+
+impl Ne for DatagramHead {
+    type B = Box<[u8]>;
+
+    fn to_ne(self) -> Self::B {
+        let mut ret = [0u8; 104];
+        debug_assert_eq!(ret.len(), size_of::<DatagramHead>());
+        let DatagramHead {
+            destination_pk,
+            source_pk,
+            nonce,
+            mac,
+        } = self;
+        {
+            let mut rest = destination_pk.put(&mut ret).unwrap();
+            let mut rest = source_pk.put(&mut rest).unwrap();
+            let mut rest = nonce.put(&mut rest).unwrap();
+            let rest = mac.put(&mut rest).unwrap();
+            debug_assert_eq!(rest.len(), 0);
+        }
+        Box::new(ret)
+    }
+
+    fn from_ne_unchecked(src: &[u8]) -> Self {
+        let (destination_pk, rest) = PublicKey::pick(src).unwrap();
+        let (source_pk, rest) = PublicKey::pick(rest).unwrap();
+        let (nonce, rest) = Nonce::pick(rest).unwrap();
+        let (mac, _rest) = Tag::pick(rest).unwrap();
+        DatagramHead {
+            destination_pk,
+            source_pk,
+            nonce,
+            mac,
+        }
+    }
+}
+
+impl Ne for PowHeader {
+    type B = [u8; 32];
+
+    fn to_ne(self) -> Self::B {
+        let mut ret = [0u8; 32];
+        debug_assert_eq!(ret.len(), size_of::<Self>());
+        let PowHeader {
+            pow_time_nanos,
+            proof_of_work,
+        } = self;
+        {
+            let mut rest = pow_time_nanos.put(&mut ret).unwrap();
+            let rest = proof_of_work.put(&mut rest).unwrap();
+            debug_assert_eq!(rest.len(), 0);
+        }
+        ret
+    }
+
+    fn from_ne_unchecked(src: &[u8]) -> Self {
+        let (pow_time_nanos, rest) = u128::pick(src).unwrap();
+        let (proof_of_work, _rest) = u128::pick(rest).unwrap();
+        PowHeader {
+            pow_time_nanos,
+            proof_of_work,
+        }
     }
 }
 
