@@ -1,4 +1,4 @@
-use crate::network_byte_order::Ne;
+use byteorder::{ByteOrder, NetworkEndian};
 use rust_sodium::crypto::box_::PublicKey;
 use sha2::{Digest, Sha256};
 use std::convert::TryInto;
@@ -15,11 +15,18 @@ pub fn prove_work(
         "That's going a bit overboard. Don't you think?"
     );
     let pre = prefix_sha(pk_a, pk_b, pow_time_nanos);
-    for n in (0..std::u128::MAX).map(Ne::to_ne) {
-        if leading_zeros(&pre.clone().chain(n).result().as_slice().try_into().unwrap())
-            >= difficulty
+    for n in 0..std::u128::MAX {
+        let nbs = to_ne(n);
+        if leading_zeros(
+            &pre.clone()
+                .chain(nbs)
+                .result()
+                .as_slice()
+                .try_into()
+                .unwrap(),
+        ) >= difficulty
         {
-            return u128::from_ne_unchecked(&n);
+            return n;
         }
     }
     panic!(
@@ -30,7 +37,7 @@ pub fn prove_work(
 pub fn score(pk_a: &PublicKey, pk_b: &PublicKey, pow_time_nanos: u128, proof_of_work: u128) -> u32 {
     leading_zeros(
         prefix_sha(pk_a, pk_b, pow_time_nanos)
-            .chain(proof_of_work.to_ne())
+            .chain(to_ne(proof_of_work))
             .result()
             .as_slice()
             .try_into()
@@ -39,14 +46,14 @@ pub fn score(pk_a: &PublicKey, pk_b: &PublicKey, pow_time_nanos: u128, proof_of_
 }
 
 fn prefix_sha(pk_a: &PublicKey, pk_b: &PublicKey, pow_time_nanos: u128) -> Sha256 {
-    let a_ne = pk_a.to_ne();
-    let b_ne = pk_b.to_ne();
+    let a_ne = pk_to_ne(pk_a.clone());
+    let b_ne = pk_to_ne(pk_b.clone());
     if a_ne > b_ne {
         Sha256::new().chain(a_ne).chain(b_ne)
     } else {
         Sha256::new().chain(b_ne).chain(a_ne)
     }
-    .chain(pow_time_nanos.to_ne())
+    .chain(to_ne(pow_time_nanos))
 }
 
 fn leading_zeros(inp: &[u8; 32]) -> u32 {
@@ -60,6 +67,20 @@ fn leading_zeros(inp: &[u8; 32]) -> u32 {
         }
     }
     return ret;
+}
+
+fn to_ne(n: u128) -> [u8; 16] {
+    let mut ret = [0u8; 16];
+    NetworkEndian::write_u128(&mut ret, n);
+    ret
+}
+
+fn pk_to_ne(n: PublicKey) -> [u8; 32] {
+    let mut bytes = n.0;
+    if cfg!(target_endian = "little") {
+        bytes.reverse();
+    }
+    bytes
 }
 
 #[cfg(test)]

@@ -24,14 +24,4 @@ impl PowDatagram {
             datagram,
         })
     }
-
-    pub fn serialize(self) -> Vec<u8> {
-        let PowDatagram {
-            pow_header,
-            datagram,
-        } = self;
-        let mut ret = pow_header.to_ne().as_ref().to_vec();
-        ret.extend(datagram.serialize());
-        ret
-    }
 }

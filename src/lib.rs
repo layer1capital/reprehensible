@@ -7,7 +7,6 @@ use rust_sodium::crypto::box_::{
     gen_nonce, open_detached_precomputed, precompute, seal_detached_precomputed, Nonce,
     PrecomputedKey, PublicKey, SecretKey, Tag,
 };
-use std::mem::size_of;
 
 #[derive(Clone, Debug)]
 struct DatagramHead {
@@ -30,31 +29,14 @@ impl Datagram {
     /// Attempt to interpret raw bytes as an encrypted datagram.
     /// None is returned only if slice is not long enough to be a valid datagram.
     pub fn parse(raw: &[u8]) -> Option<Datagram> {
-        let (head, rest) = DatagramHead::pick(raw)?;
-        let cyphertext = rest.to_vec();
-        Some(Datagram { head, cyphertext })
+        let (dg, rest) = Ne::pick(raw)?;
+        debug_assert_eq!(rest.len(), 0);
+        Some(dg)
     }
 
     pub fn serialize(self) -> Vec<u8> {
-        let Datagram {
-            head:
-                DatagramHead {
-                    destination_pk,
-                    source_pk,
-                    nonce,
-                    mac,
-                },
-            mut cyphertext,
-        } = self;
-        let retlen = size_of::<DatagramHead>() + cyphertext.len();
-        let mut ret = Vec::with_capacity(retlen);
-        ret.extend_from_slice(&destination_pk.to_ne());
-        ret.extend_from_slice(&source_pk.to_ne());
-        ret.extend_from_slice(&nonce.to_ne());
-        ret.extend_from_slice(&mac.to_ne());
-        ret.append(&mut cyphertext);
-        debug_assert_eq!(ret.len(), retlen);
-        ret
+        unimplemented!()
+        // Ne::serialize_to_vec(&self)
     }
 }
 
@@ -166,6 +148,7 @@ fn xor_bytes(mut a: [u8; 32], b: &[u8; 32]) -> [u8; 32] {
 mod tests {
     use super::*;
     use rust_sodium::crypto::box_::gen_keypair;
+    use std::mem::size_of;
 
     #[test]
     fn echo_attack() {
