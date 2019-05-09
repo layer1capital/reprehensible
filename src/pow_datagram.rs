@@ -3,6 +3,7 @@ use crate::pow_header::PowHeader;
 use crate::Datagram;
 
 /// A datagram with a timestamped Pow tag over it's source and destination public keys.
+#[derive(Clone, Debug, PartialEq)]
 pub struct PowDatagram {
     pub pow_header: PowHeader,
     pub datagram: Datagram,

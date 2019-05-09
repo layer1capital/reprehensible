@@ -2,13 +2,13 @@ mod network_byte_order;
 mod pow;
 pub mod pow_datagram;
 pub mod pow_header;
-use crate::network_byte_order::Ne;
+use crate::network_byte_order::{Ne, ToNe};
 use rust_sodium::crypto::box_::{
     gen_nonce, open_detached_precomputed, precompute, seal_detached_precomputed, Nonce,
     PrecomputedKey, PublicKey, SecretKey, Tag,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct DatagramHead {
     /// Public key of receiver, potentially used for routing.
     destination_pk: PublicKey,
@@ -19,7 +19,7 @@ struct DatagramHead {
     mac: Tag,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Datagram {
     head: DatagramHead,
     cyphertext: Vec<u8>,
@@ -35,8 +35,7 @@ impl Datagram {
     }
 
     pub fn serialize(self) -> Vec<u8> {
-        unimplemented!()
-        // Ne::serialize_to_vec(&self)
+        ToNe::serialize_to_vec(&self)
     }
 }
 

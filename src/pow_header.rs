@@ -4,7 +4,7 @@ use rust_sodium::crypto::box_::PublicKey;
 /// Some bytes prepended to a datagram. Tags a source public key and a destination public key
 /// with a timestamp.
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PowHeader {
     /// Time when proof of work was computed
     pub pow_time_nanos: u128,

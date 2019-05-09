@@ -24,7 +24,7 @@ pub trait ToNe: Sized {
     ///
     /// This function will panic it the size reported by [`size`] is incorrect.
     fn serialize_to_vec(&self) -> Vec<u8> {
-        let mut ret = Vec::with_capacity(self.size());
+        let mut ret = vec![0u8; self.size()];
         let rest = self
             .put(&mut ret)
             .expect("object serialized was larger than reported");
@@ -153,7 +153,7 @@ impl<T: ToNe, S: ToNe> ToNe for (T, S) {
 
     fn size(&self) -> usize {
         let (t, s) = self;
-        t.size() + s.size()
+        ToNe::size(t) + ToNe::size(s)
     }
 }
 
@@ -177,7 +177,7 @@ impl<A: ToNe, B: ToNe, C: ToNe, D: ToNe> ToNe for (A, B, C, D) {
 
     fn size(&self) -> usize {
         let (a, b, c, d) = self;
-        a.size() + b.size() + c.size() + d.size()
+        ToNe::size(a) + ToNe::size(b) + ToNe::size(c) + ToNe::size(d)
     }
 }
 
@@ -209,7 +209,7 @@ impl ToNe for DatagramHead {
             nonce,
             mac,
         } = self;
-        ToNe::size(&(destination_pk, source_pk, nonce, mac))
+        ToNe::size(destination_pk) + ToNe::size(source_pk) + ToNe::size(nonce) + ToNe::size(mac)
     }
 }
 
@@ -374,4 +374,119 @@ fn put_toggle_ne<'a>(src: &[u8], dest: &'a mut [u8]) -> Option<(&'a mut [u8])> {
     head.copy_from_slice(src);
     toggle_ne(head);
     Some(tail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::random;
+    use rust_sodium::crypto::box_::{gen_keypair, gen_nonce};
+    use std::fmt::Debug;
+
+    fn ser<T: ToNe>(t: T) {
+        t.serialize_to_vec();
+    }
+
+    fn ser_deser<T: Ne + PartialEq + Debug>(t: T) {
+        let v = t.serialize_to_vec();
+        let (t2, rest) = T::pick(&v).unwrap();
+        assert_eq!(rest.len(), 0);
+        assert_eq!(t, t2);
+    }
+
+    fn rand_vecu8() -> Vec<u8> {
+        (0..(random::<usize>() % 265)).map(|_| random()).collect()
+    }
+
+    #[test]
+    /// serialize, deserialize Nonce
+    fn sd_nonce() {
+        ser_deser(gen_nonce());
+    }
+
+    #[test]
+    fn sd_pk() {
+        ser_deser::<PublicKey>(gen_keypair().0);
+    }
+
+    #[test]
+    fn sd_sk() {
+        ser_deser::<SecretKey>(gen_keypair().1);
+    }
+
+    #[test]
+    fn sd_tag() {
+        ser_deser(Tag(random()));
+    }
+
+    #[test]
+    fn sd_u128() {
+        ser_deser::<u128>(random());
+        ser::<&u128>(&random());
+    }
+
+    #[test]
+    fn sd_2t() {
+        ser_deser::<(u128, u128)>(random());
+    }
+
+    #[test]
+    fn sd_4t() {
+        ser_deser::<(u128, u128, u128, u128)>(random());
+    }
+
+    #[test]
+    fn sd_dgh() {
+        ser_deser(DatagramHead {
+            destination_pk: PublicKey(random()),
+            source_pk: PublicKey(random()),
+            nonce: Nonce(random()),
+            mac: Tag(random()),
+        });
+    }
+
+    #[test]
+    fn sd_ph() {
+        ser_deser(PowHeader {
+            pow_time_nanos: random(),
+            proof_of_work: random(),
+        });
+    }
+
+    #[test]
+    fn sd_dg() {
+        ser_deser(Datagram {
+            head: DatagramHead {
+                destination_pk: PublicKey(random()),
+                source_pk: PublicKey(random()),
+                nonce: Nonce(random()),
+                mac: Tag(random()),
+            },
+            cyphertext: rand_vecu8(),
+        });
+    }
+
+    #[test]
+    fn sd_vu8() {
+        ser_deser(rand_vecu8());
+    }
+
+    #[test]
+    fn sd_pdg() {
+        ser_deser(PowDatagram {
+            pow_header: PowHeader {
+                pow_time_nanos: random(),
+                proof_of_work: random(),
+            },
+            datagram: Datagram {
+                head: DatagramHead {
+                    destination_pk: PublicKey(random()),
+                    source_pk: PublicKey(random()),
+                    nonce: Nonce(random()),
+                    mac: Tag(random()),
+                },
+                cyphertext: rand_vecu8(),
+            },
+        });
+    }
 }
