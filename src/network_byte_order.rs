@@ -28,8 +28,8 @@ pub trait ToNe: Sized {
         let rest = self
             .put(&mut ret)
             .expect("object serialized was larger than reported");
-        if rest.len() != 0 {
-            panic!("object serialized was larger than reported");
+        if !rest.is_empty() {
+            panic!("object serialized was smaller than reported");
         }
         ret
     }
