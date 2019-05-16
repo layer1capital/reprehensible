@@ -12,5 +12,5 @@ bincode = "1.1.3"
 serde = { version = "1", features = ["derive"] }
 pow = "0.1.2"
 shrinkwraprs = "0.2.1"
-sealed = { git = "https://github.com/bddap/sealed.git" }
 sha2 = "0.8.0"
+lru-cache = "0.1.2"
