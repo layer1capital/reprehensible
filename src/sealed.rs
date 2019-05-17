@@ -37,7 +37,7 @@ impl<T: Serialize + DeserializeOwned> Sealed<T> {
         open_detached_precomputed(&mut cyphertext, &mac, &nonce, &shared_send_secret)
             .map_err(|_| Invalid::Decryption)?;
         let maybe_t = deserialize_be(&cyphertext);
-        /// clear plaintext from memory for extra security
+        // clear plaintext from memory for extra security
         for b in cyphertext.iter_mut() {
             *b = 0;
         }

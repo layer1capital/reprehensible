@@ -13,4 +13,5 @@ serde = { version = "1", features = ["derive"] }
 pow = "0.1.2"
 shrinkwraprs = "0.2.1"
 sha2 = "0.8.0"
-lru-cache = "0.1.2"
+rand = "0.6.5"
+lru = "0.1.15"

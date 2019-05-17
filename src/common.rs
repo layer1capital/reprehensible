@@ -18,6 +18,14 @@ fn bincode_cfg_be() -> bincode::Config {
     cfg
 }
 
+pub fn xor(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
+    let mut ret = [0u8; 32];
+    for i in 0..32 {
+        ret[i] = a[i] ^ b[i];
+    }
+    ret
+}
+
 /// Value could not be encrypted because in-memory serializaition failed.
 #[derive(PartialEq, Clone, Debug)]
 pub struct SerializeFailed;
