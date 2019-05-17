@@ -1,9 +1,9 @@
 //! lyra (randomly named)
 
 mod channel;
-mod initiator;
-mod responder;
+mod ephemeral_secret;
 mod types;
 
-pub use initiator::EstablishingChannel;
-pub use responder::Responder;
+pub use channel::Channel;
+pub use channel::ChannelRequest;
+pub use types::Lyra;

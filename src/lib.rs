@@ -6,5 +6,8 @@ mod lyra;
 mod sealed;
 mod sha_ext;
 
-pub use lyra::EstablishingChannel;
-pub use lyra::Responder;
+pub use isle::Isle;
+pub use lyra::Channel;
+pub use lyra::ChannelRequest;
+pub use lyra::Lyra;
+pub use sealed::Sealed;
