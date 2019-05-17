@@ -1,11 +1,12 @@
 use crate::invalid::Invalid;
 use crate::locked::Locked;
-use crate::lyra::EphemeralSecret256;
+use crate::lyra::*;
 use crate::sha_ext::Sha256Ext;
 use core::marker::PhantomData;
 use rust_sodium::crypto::secretbox::Key;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{digest::Digest, Sha256};
+use types::EphemeralSecret256;
 
 /// Interesting property, channel can be transfered to another host, effectively giving the other
 /// host ability to read and write messages on the channel.

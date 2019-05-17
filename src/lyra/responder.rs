@@ -1,10 +1,10 @@
 use crate::isle::Isle;
-use crate::lyra::{ChannelData, EphemeralSecret256, GrantChannel, Lyra, RequestChannel};
-use crate::lyra_channel::{Channel, ChannelId};
-
+use crate::lyra::*;
+use channel::{Channel, ChannelId};
 use lru::LruCache;
 use rust_sodium::crypto::box_::SecretKey;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use types::{ChannelData, EphemeralSecret256, GrantChannel, Lyra, RequestChannel};
 
 pub struct Responder<T> {
     sk: SecretKey,
@@ -14,16 +14,16 @@ pub struct Responder<T> {
 impl<T: Serialize + DeserializeOwned> Responder<T> {
     pub fn accept(&mut self, lyra: Lyra<T>) -> AcceptResult<T> {
         match lyra {
-            Lyra::InitiateOpen(initiate) => self.accept_open(initiate).into(),
-            Lyra::FinalizeOpen(_) => AcceptResult::Drop, // finalize requests are ignored
+            Lyra::RequestChannel(initiate) => self.accept_open(initiate).into(),
+            Lyra::GrantChannel(_) => AcceptResult::Drop, // finalize requests are ignored
             Lyra::ChannelData(dat) => self.accept_channel(dat).into(),
         }
     }
 
     fn accept_open(&mut self, init_request: Isle<RequestChannel>) -> Option<Isle<GrantChannel>> {
-        let (source_pk, request) = init_request.open(&self.sk).ok()?;
+        let (origin_pk, request) = init_request.open(&self.sk).ok()?;
         let finalize = self.accept_open_decrypted(&request);
-        let ret = Isle::seal(&source_pk, &self.sk, &finalize).ok();
+        let ret = Isle::seal(&origin_pk, &self.sk, &finalize).ok();
         debug_assert!(ret.is_some());
         ret
     }

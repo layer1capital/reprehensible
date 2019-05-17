@@ -1,8 +1,9 @@
 use crate::isle::Isle;
-use crate::lyra::{EphemeralSecret256, GrantChannel, RequestChannel};
-use crate::lyra_channel::Channel;
+use crate::lyra::*;
+use channel::Channel;
 use core::marker::PhantomData;
 use rust_sodium::crypto::box_::{PublicKey, SecretKey};
+use types::{EphemeralSecret256, GrantChannel, RequestChannel};
 
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -27,11 +28,11 @@ impl<T: Serialize + DeserializeOwned> EstablishingChannel<T> {
     pub fn request(
         &self,
         destination_pk: &PublicKey,
-        source_sk: &SecretKey,
+        origin_sk: &SecretKey,
     ) -> Isle<RequestChannel> {
         Isle::seal(
             destination_pk,
-            source_sk,
+            origin_sk,
             &RequestChannel {
                 initiator_random: self.initiator_random.clone(),
             },

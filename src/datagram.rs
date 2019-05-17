@@ -15,11 +15,11 @@ pub struct Datagram {
 impl Datagram {
     pub fn pow_score(&self) -> u128 {
         let dest_pk = self.message.destination_pk().clone();
-        let source_pk = self.message.source_pk().clone();
-        let (pka, pkb) = if dest_pk > source_pk {
-            (source_pk, dest_pk)
+        let origin_pk = self.message.origin_pk().clone();
+        let (pka, pkb) = if dest_pk > origin_pk {
+            (origin_pk, dest_pk)
         } else {
-            (dest_pk, source_pk)
+            (dest_pk, origin_pk)
         };
         self.pow
             .score(&(pka, pkb, self.timestamp))
@@ -49,7 +49,7 @@ impl Datagram {
 //         if message != self.pk {
 //             return None;
 //         } else {
-//             SessionKey::compute(&self.sk, &source_pk).open(source_pk, nonce, mac, cyphertext)
+//             SessionKey::compute(&self.sk, &origin_pk).open(origin_pk, nonce, mac, cyphertext)
 //         }
 //     }
 // }
@@ -79,7 +79,7 @@ impl Datagram {
 //         assert!(client.decrypt(datagram.clone()).is_none());
 
 //         // modify sender public key and echo
-//         datagram.head.source_pk = server.pk;
+//         datagram.head.origin_pk = server.pk;
 //         assert!(client.decrypt(datagram).is_none());
 //     }
 
@@ -102,7 +102,7 @@ impl Datagram {
 //         let client = Cryptor::new(gen_keypair().1);
 //         let datagram = client.encrypt(server.pk, b"hello".to_vec());
 //         let datagram_decrypted = server.decrypt(datagram).unwrap();
-//         assert_eq!(datagram_decrypted.source_pk, client.pk);
+//         assert_eq!(datagram_decrypted.origin_pk, client.pk);
 //         assert_eq!(&datagram_decrypted.plaintext, &b"hello");
 //     }
 
@@ -120,7 +120,7 @@ impl Datagram {
 //         let server = Cryptor::new(gen_keypair().1);
 //         let datagram = server.encrypt(server.pk, b"hello".to_vec());
 //         let datagram_decrypted = server.decrypt(datagram).unwrap();
-//         assert_eq!(datagram_decrypted.source_pk, server.pk);
+//         assert_eq!(datagram_decrypted.origin_pk, server.pk);
 //         assert_eq!(&datagram_decrypted.plaintext, &b"hello");
 //     }
 
@@ -162,11 +162,11 @@ impl Datagram {
 //         pub fn echo_server(mut datagram: Vec<u8>) -> Option<Vec<u8>> {
 //             let server = Cryptor::new(SERVER_SK);
 //             let dg = Datagram::parse(&mut datagram)?;
-//             let source_pk = dg.head.source_pk;
+//             let origin_pk = dg.head.origin_pk;
 //             let mut message = server.decrypt(dg)?;
 //             let mut reply = message.plaintext.clone();
 //             reply.append(&mut message.plaintext);
-//             let reply_dg = server.encrypt(source_pk, reply);
+//             let reply_dg = server.encrypt(origin_pk, reply);
 //             Some(reply_dg.serialize())
 //         }
 
@@ -181,9 +181,9 @@ impl Datagram {
 //             let mut response_dg_raw = echo_server(dg).unwrap();
 //             let response_dg = Datagram::parse(&mut response_dg_raw).unwrap();
 //             assert_eq!(response_dg.head.destination_pk, client.pk);
-//             assert_eq!(response_dg.head.source_pk, server_pk);
+//             assert_eq!(response_dg.head.origin_pk, server_pk);
 //             let response_plain = client.decrypt(response_dg).unwrap();
-//             assert_eq!(response_plain.source_pk, server_pk);
+//             assert_eq!(response_plain.origin_pk, server_pk);
 //             assert_eq!(response_plain.plaintext, b"redundancyredundancy");
 //         }
 
@@ -201,7 +201,7 @@ impl Datagram {
 //                 assert!(echo_server(dg).is_none());
 //             }
 //             {
-//                 // tamper source pk
+//                 // tamper origin pk
 //                 let mut dg = dg.clone();
 //                 let sender_loc = size_of::<PublicKey>();
 //                 dg[sender_loc] = dg[sender_loc].wrapping_add(1);
@@ -249,7 +249,7 @@ impl Datagram {
 //             })
 //             .is_none());
 //             assert!(typed_tamper(|dg| {
-//                 dg.head.source_pk.0[0] = dg.head.source_pk.0[0].wrapping_add(1);
+//                 dg.head.origin_pk.0[0] = dg.head.origin_pk.0[0].wrapping_add(1);
 //             })
 //             .is_none());
 //             assert!(typed_tamper(|dg| {
@@ -311,9 +311,9 @@ impl Datagram {
 //         let message = client.encrypt(server.pk, b"hello".to_vec()).serialize();
 //         let message = client.encrypt(server.pk, message);
 //         let rx = server.decrypt(message).unwrap();
-//         assert_eq!(rx.source_pk, client_pk);
+//         assert_eq!(rx.origin_pk, client_pk);
 //         let dg = Datagram::parse(&rx.plaintext).unwrap();
-//         assert_eq!(dg.head.source_pk, client_pk);
+//         assert_eq!(dg.head.origin_pk, client_pk);
 //         assert_ne!(dg.cyphertext, b"hello");
 //         let rx = server.decrypt(dg).unwrap();
 //         assert_eq!(rx.plaintext, b"hello");
